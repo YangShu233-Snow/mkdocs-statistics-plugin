@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 
 from jinja2 import Template
+import yaml
 
 from mkdocs.config import config_options
 from mkdocs.plugins import BasePlugin
@@ -25,6 +26,7 @@ class StatisticsPlugin(BasePlugin):
         ('words_placeholder', config_options.Type(str, default=r'\{\{\s*words\s*\}\}')),
         ('codes_placeholder', config_options.Type(str, default=r'\{\{\s*codes\s*\}\}')),
         ('images_placeholder', config_options.Type(str, default=r'\{\{\s*images\s*\}\}')),
+        ('book_placeholder', config_options.Type(str, default=r'\{\{\s*book\s*\}\}')),
         ('page_statistics', config_options.Type(bool, default=True)),
         ('page_check_metadata', config_options.Type(str, default="")),
         ('page_read_time', config_options.Type(bool, default=True)),
@@ -35,6 +37,7 @@ class StatisticsPlugin(BasePlugin):
         ('ignore_languages', config_options.Type(list, default=["mermaid", "math"])),
         ('include_path', config_options.Type(str, default="")),
         ('exclude_path', config_options.Type(str, default="")),
+        ('books_config_path', config_options.Type(str, default="books.yml"))
     )
 
     enabled = True
@@ -54,11 +57,27 @@ class StatisticsPlugin(BasePlugin):
         else:
             with open(config['docs_dir'] + '/' + page_template, 'r', encoding='utf-8') as file:
                 self.template = file.read()
+
+        books_config_path = self.config.get("books_config_path")
+        books_full_path = os.path.join(config['docs_dir'], books_config_path)
+
+        try:
+            with open(books_full_path, 'r', encoding='utf-8') as file:
+                self.books_config = yaml.safe_load(file)
+                log.info(f"成功加载书籍配置: {books_full_path}")
+        except FileNotFoundError:
+            log.error(f"书籍配置文件不存在: {books_full_path}")
+            self.books_config = {}
+        except yaml.YAMLError as e:
+            log.error(f"书籍配置文件格式错误: {e}")
+            self.books_config = {}
+
         return config
     
     def on_files(self, files: Files, *, config: config_options.Config) -> Optional[Files]:
         self.pages = 0
         self.words = 0
+        self.book = ''
         self.codes = 0
         self.images = 0
 
@@ -98,6 +117,7 @@ class StatisticsPlugin(BasePlugin):
 
             self.pages += 1
             self._words_count(markdown)
+            self._the_closest_book(self.words, self.books_config)
             
         return files
     
@@ -141,6 +161,13 @@ class StatisticsPlugin(BasePlugin):
             markdown = re.sub(
                 self.config.get("images_placeholder"),
                 str(self.images),
+                markdown,
+                flags=re.IGNORECASE,
+            )
+
+            markdown = re.sub(
+                self.config.get("book_placeholder"),
+                self.book,
                 markdown,
                 flags=re.IGNORECASE,
             )
@@ -204,6 +231,23 @@ class StatisticsPlugin(BasePlugin):
             page.meta["statistics_page_read_time"] = read_time
 
         return markdown
+    
+    def _the_closest_book(self, words: int, books_config: list) -> None:
+        try:
+            the_cloest_book = min(
+                books_config, 
+                key = lambda book: abs(book["words"] - words)
+                )
+            self.book = '《' + the_cloest_book["name"]  + '》'
+        except KeyError:
+            log.error("书籍配置文件格式错误: 缺少'words'或'name'字段")
+            self.book = ''
+        except TypeError:    
+            log.error("书籍配置文件格式错误: 'words'字段类型错误")
+            self.book = ''
+        except ValueError as e:
+            log.error(f"书籍配置文件格式错误: {e}")
+            self.book = ''
 
     def _words_count(self, markdown: str) -> None:
         self.images += len(re.findall("<img.*>", markdown)) + len(re.findall(r'!\[[^\]]*\]\([^)]*\)', markdown))
